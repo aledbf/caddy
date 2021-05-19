@@ -287,6 +287,8 @@ func (app *App) Validate() error {
 	return nil
 }
 
+const resourceBody99Percentile = 256 * 1024
+
 // Start runs the app. It finishes automatic HTTPS if enabled,
 // including management of certificates.
 func (app *App) Start() error {
@@ -307,11 +309,26 @@ func (app *App) Start() error {
 			ErrorLog:          serverLogger,
 		}
 
+		http2Options := &http2.Server{}
+		// shrink the per-stream buffer and max framesize from the 1MB default while still accommodating most API POST requests in a single frame
+		http2Options.MaxUploadBufferPerStream = resourceBody99Percentile
+		http2Options.MaxReadFrameSize = resourceBody99Percentile
+		// use the overridden concurrent streams setting or make the default of 250 explicit so we can size MaxUploadBufferPerConnection appropriately
+		http2Options.MaxConcurrentStreams = 250
+		// increase the connection buffer size from the 1MB default to handle the specified number of concurrent streams
+		http2Options.MaxUploadBufferPerConnection = http2Options.MaxUploadBufferPerStream * int32(http2Options.MaxConcurrentStreams)
+
+		// apply settings to the server
+		if err := http2.ConfigureServer(s, http2Options); err != nil {
+			return fmt.Errorf("failed to configure http2: %v", err)
+		}
+
 		// enable h2c if configured
 		if srv.AllowH2C {
 			h2server := &http2.Server{
 				IdleTimeout: time.Duration(srv.IdleTimeout),
 			}
+
 			s.Handler = h2c.NewHandler(srv, h2server)
 		}
 
